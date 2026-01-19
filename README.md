@@ -39,5 +39,6 @@
 ### 1. Клонирование репозитория
 
 ```bash
-git clone [https://github.com/aura-id-network/aura-id-api.git](https://github.com/aura-id-network/aura-id-api.git)
+git clone [https://github.com/aura-id-network/aura-id-api.git]
 cd aura-id-api
+
