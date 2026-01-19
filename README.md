@@ -91,7 +91,7 @@ DATABASE_URL=sqlite:///aura_pro.db
 # Server Config
 FLASK_HOST=0.0.0.0
 FLASK_PORT=20196
-API_BASE_URL=[https://144.31.164.141.sslip.io](https://144.31.164.141.sslip.io)
+API_BASE_URL=https://144.31.164.141.sslip.io
 
 ```
 
