@@ -14,7 +14,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token_here")
 admin_ids_str = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(x) for x in admin_ids_str.split(",") if x.strip().isdigit()]
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///aura_pro.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///aura_pro.db") # Можно изменить на своё название
 
 CARD_CREATION_PRICE = 1  # Telegram Stars
 
