@@ -122,8 +122,20 @@ def init_db():
         if current_version < "1.4.0":
             migrate_to_v1_4_0(cursor)
         
+        if current_version < "1.5.0":
+            # Add star_price column to cards table
+            migrate_to_v1_5_0(cursor)
+        
+        if current_version < "1.6.0":
+            # Add airdrops table
+            migrate_to_v1_6_0(cursor)
+        
+        if current_version < "1.7.0":
+            # Add cover_image column to airdrops table
+            migrate_to_v1_7_0(cursor)
+        
         # Update migration version
-        cursor.execute("INSERT OR REPLACE INTO schema_migrations (version) VALUES ('1.4.0')")
+        cursor.execute("INSERT OR REPLACE INTO schema_migrations (version) VALUES ('1.7.0')")
         
         # Verify database integrity
         cursor.execute("PRAGMA integrity_check")
@@ -253,11 +265,59 @@ def migrate_to_v1_4_0(cursor):
     """)
 
     cursor.execute("SELECT id FROM collections WHERE link_id IS NULL OR link_id = ''")
-    rows = cursor.fetchall()
-    for row in rows:
-        collection_id = row[0]
-        link_id = str(uuid.uuid4().hex)[:16]
-        cursor.execute("UPDATE collections SET link_id = ? WHERE id = ?", (link_id, collection_id))
+    collections_without_link = cursor.fetchall()
+    for collection in collections_without_link:
+        new_link_id = str(uuid.uuid4().hex)[:16]
+        cursor.execute("UPDATE collections SET link_id = ? WHERE id = ?", (new_link_id, collection[0]))
+
+
+def migrate_to_v1_6_0(cursor):
+    """Add airdrops table migration"""
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS airdrops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            creator_id INTEGER NOT NULL,
+            message_id INTEGER,
+            chat_id INTEGER,
+            is_active BOOLEAN DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (creator_id) REFERENCES users (id)
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS airdrop_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            airdrop_id INTEGER NOT NULL,
+            card_id INTEGER NOT NULL,
+            is_reserved BOOLEAN DEFAULT 0,
+            reserved_by INTEGER,
+            reserved_at TEXT,
+            FOREIGN KEY (airdrop_id) REFERENCES airdrops (id),
+            FOREIGN KEY (card_id) REFERENCES cards (id),
+            FOREIGN KEY (reserved_by) REFERENCES users (id)
+        )
+    """)
+
+def migrate_to_v1_7_0(cursor):
+    """Add cover_image column to airdrops table migration"""
+    cursor.execute("PRAGMA table_info(airdrops)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'cover_image' not in columns:
+        cursor.execute("ALTER TABLE airdrops ADD COLUMN cover_image TEXT")
+
+
+def migrate_to_v1_5_0(cursor):
+    """Add star_price column to cards table migration"""
+    cursor.execute("PRAGMA table_info(cards)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'star_price' not in columns:
+        cursor.execute("ALTER TABLE cards ADD COLUMN star_price INTEGER DEFAULT 1")
+    
+    # Set default star_price for existing cards
+    cursor.execute("UPDATE cards SET star_price = 1 WHERE star_price IS NULL")
 
 class User:
     def __init__(self, telegram_id: int, username: str = None, first_name: str = None, is_admin: bool = False):
@@ -305,17 +365,17 @@ class User:
     
     def get_cards(self):
         with get_db_cursor() as cursor:
-            cursor.execute("SELECT * FROM cards WHERE owner_id = ?", (self.id,))
+            cursor.execute("SELECT * FROM cards WHERE owner_id = ?", (self.telegram_id,))
             return [Card.from_row(row) for row in cursor.fetchall()]
     
     def get_collections(self):
         with get_db_cursor() as cursor:
-            cursor.execute("SELECT * FROM collections WHERE author_id = ?", (self.id,))
+            cursor.execute("SELECT * FROM collections WHERE author_id = ?", (self.telegram_id,))
             return [Collection.from_row(row) for row in cursor.fetchall()]
 
 class Card:
     def __init__(self, card_number: int, name: str, owner_id: int, expires: str = "Never", 
-                 engraving_color: str = "white", has_background: bool = False, collection_id: int = None, registration_date: str = None, access_key: str = None):
+                 engraving_color: str = "white", has_background: bool = False, collection_id: int = None, registration_date: str = None, access_key: str = None, star_price: int = 1):
         self.card_number = card_number
         self.name = name
         self.owner_id = owner_id
@@ -323,9 +383,10 @@ class Card:
         self.engraving_color = engraving_color
         self.has_background = has_background
         self.collection_id = collection_id
+        self.registration_date = registration_date or datetime.utcnow().strftime("%d.%m.%Y")
         self.access_key = access_key
+        self.star_price = star_price
         self.created_at = datetime.utcnow().isoformat()
-        self.registration_date = registration_date or datetime.utcnow().isoformat()
         self.id = None
     
     def save(self):
@@ -334,10 +395,10 @@ class Card:
                 # Insert new card
                 cursor.execute("""
                     INSERT INTO cards (card_number, name, owner_id, registration_date, expires, 
-                                     engraving_color, has_background, collection_id, created_at, access_key)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                     engraving_color, has_background, collection_id, created_at, access_key, star_price)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (self.card_number, self.name, self.owner_id, self.registration_date, 
-                      self.expires, self.engraving_color, self.has_background, self.collection_id, self.created_at, self.access_key))
+                      self.expires, self.engraving_color, self.has_background, self.collection_id, self.created_at, self.access_key, self.star_price))
                 
                 self.id = cursor.lastrowid
             else:
@@ -345,18 +406,19 @@ class Card:
                 cursor.execute("""
                     UPDATE cards 
                     SET name = ?, owner_id = ?, registration_date = ?, expires = ?,
-                        engraving_color = ?, has_background = ?, collection_id = ?, access_key = ?
+                        engraving_color = ?, has_background = ?, collection_id = ?, access_key = ?, star_price = ?
                     WHERE id = ?
                 """, (self.name, self.owner_id, self.registration_date, self.expires,
-                      self.engraving_color, self.has_background, self.collection_id, self.access_key, self.id))
+                      self.engraving_color, self.has_background, self.collection_id, self.access_key, self.star_price, self.id))
             return self
     
     @classmethod
     def from_row(cls, row):
         access_key = row['access_key'] if 'access_key' in row.keys() else None
+        star_price = row['star_price'] if 'star_price' in row.keys() else 1
         card = cls(row['card_number'], row['name'], row['owner_id'], row['expires'], 
                   row['engraving_color'], bool(row['has_background']), row['collection_id'], 
-                  row['registration_date'], access_key)
+                  row['registration_date'], access_key, star_price)
         card.id = row['id']
         card.created_at = row['created_at']
         card.registration_date = row['registration_date']
@@ -385,12 +447,17 @@ class Card:
             return cls.from_row(row) if row else None
     
     def get_owner(self):
-        return User.get_by_id(self.owner_id)
+        return User.get_by_telegram_id(self.owner_id)
     
     def get_collection(self):
         if self.collection_id:
             return Collection.get_by_id(self.collection_id)
         return None
+    
+    def delete(self):
+        """Delete the card from database"""
+        with get_db_cursor() as cursor:
+            cursor.execute("DELETE FROM cards WHERE id = ?", (self.id,))
 
 class Collection:
     def __init__(self, name: str, author_id: int, star_price: int = 1, description: str = None, link_id: str = None):
@@ -428,7 +495,15 @@ class Collection:
             return self
     
     def update_price(self):
-        """Calculate and update collection price from cards in collection"""
+        """Simple price update - set to 0 when collections are disabled"""
+        from config import ENABLE_COLLECTIONS
+        if not ENABLE_COLLECTIONS:
+            self.star_price = 0
+            with get_db_cursor() as cursor:
+                cursor.execute("UPDATE collections SET star_price = ? WHERE id = ?", (0, self.id))
+            return 0
+        
+        # Original complex logic for enabled collections
         cards = self.get_cards()
         total_price = 0
         
@@ -619,3 +694,154 @@ class CollectionLink:
         with get_db_cursor() as cursor:
             cursor.execute("UPDATE collection_links SET is_active = 0 WHERE id = ?", (self.id,))
             self.is_active = False
+
+class Airdrop:
+    def __init__(self, name: str, creator_id: int, description: str = None):
+        self.name = name
+        self.description = description or ""
+        self.creator_id = creator_id
+        self.message_id = None
+        self.chat_id = None
+        self.is_active = True
+        self.created_at = datetime.utcnow().isoformat()
+        self.id = None
+
+    def save(self):
+        with get_db_cursor() as cursor:
+            if self.id is None:
+                cursor.execute("""
+                    INSERT INTO airdrops (name, description, creator_id, message_id, chat_id, is_active, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (self.name, self.description, self.creator_id, self.message_id, self.chat_id, self.is_active, self.created_at))
+                self.id = cursor.lastrowid
+            else:
+                cursor.execute("""
+                    UPDATE airdrops 
+                    SET name = ?, description = ?, message_id = ?, chat_id = ?, is_active = ?
+                    WHERE id = ?
+                """, (self.name, self.description, self.message_id, self.chat_id, self.is_active, self.id))
+            return self
+    
+    @classmethod
+    def from_row(cls, row):
+        airdrop = cls(row['name'], row['creator_id'], row['description'])
+        airdrop.id = row['id']
+        airdrop.message_id = row['message_id']
+        airdrop.chat_id = row['chat_id']
+        airdrop.is_active = bool(row['is_active'])
+        airdrop.created_at = row['created_at']
+        return airdrop
+    
+    @classmethod
+    def get_by_id(cls, airdrop_id: int):
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT * FROM airdrops WHERE id = ?", (airdrop_id,))
+            row = cursor.fetchone()
+            return cls.from_row(row) if row else None
+    
+    @classmethod
+    def get_active_airdrops(cls):
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT * FROM airdrops WHERE is_active = 1 ORDER BY created_at DESC")
+            return [cls.from_row(row) for row in cursor.fetchall()]
+    
+    def get_creator(self):
+        return User.get_by_id(self.creator_id)
+    
+    def get_cards(self):
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT c.* FROM cards c
+                JOIN airdrop_cards ac ON c.id = ac.card_id
+                WHERE ac.airdrop_id = ? AND ac.is_reserved = 0
+            """, (self.id,))
+            return [Card.from_row(row) for row in cursor.fetchall()]
+    
+    def get_total_cards(self):
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM airdrop_cards WHERE airdrop_id = ?", (self.id,))
+            return cursor.fetchone()[0]
+    
+    def get_available_cards(self):
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM airdrop_cards WHERE airdrop_id = ? AND is_reserved = 0", (self.id,))
+            return cursor.fetchone()[0]
+    
+    def add_card(self, card_id: int):
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                INSERT OR IGNORE INTO airdrop_cards (airdrop_id, card_id)
+                VALUES (?, ?)
+            """, (self.id, card_id))
+    
+    def deactivate(self):
+        self.is_active = False
+        self.save()
+
+
+class AirdropCard:
+    def __init__(self, airdrop_id: int, card_id: int):
+        self.airdrop_id = airdrop_id
+        self.card_id = card_id
+        self.is_reserved = False
+        self.reserved_by = None
+        self.reserved_at = None
+        self.id = None
+    
+    def save(self):
+        with get_db_cursor() as cursor:
+            if self.id is None:
+                cursor.execute("""
+                    INSERT INTO airdrop_cards (airdrop_id, card_id, is_reserved, reserved_by, reserved_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (self.airdrop_id, self.card_id, self.is_reserved, self.reserved_by, self.reserved_at))
+                self.id = cursor.lastrowid
+            else:
+                cursor.execute("""
+                    UPDATE airdrop_cards 
+                    SET is_reserved = ?, reserved_by = ?, reserved_at = ?
+                    WHERE id = ?
+                """, (self.is_reserved, self.reserved_by, self.reserved_at, self.id))
+            return self
+    
+    @classmethod
+    def from_row(cls, row):
+        airdrop_card = cls(row['airdrop_id'], row['card_id'])
+        airdrop_card.id = row['id']
+        airdrop_card.is_reserved = bool(row['is_reserved'])
+        airdrop_card.reserved_by = row['reserved_by']
+        airdrop_card.reserved_at = row['reserved_at']
+        return airdrop_card
+    
+    @classmethod
+    def get_random_available_card(cls, airdrop_id: int):
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT ac.* FROM airdrop_cards ac
+                WHERE ac.airdrop_id = ? AND ac.is_reserved = 0
+                ORDER BY RANDOM() LIMIT 1
+            """, (airdrop_id,))
+            row = cursor.fetchone()
+            return cls.from_row(row) if row else None
+    
+    def reserve_card(self, user_id: int):
+        self.is_reserved = True
+        self.reserved_by = user_id
+        self.reserved_at = datetime.utcnow().isoformat()
+        
+        # Transfer card ownership
+        card = Card.get_by_id(self.card_id)
+        if card:
+            card.owner_id = user_id
+            card.save()
+        
+        self.save()
+        return card
+    
+    def get_card(self):
+        return Card.get_by_id(self.card_id)
+    
+    def get_reserved_user(self):
+        if self.reserved_by:
+            return User.get_by_id(self.reserved_by)
+        return None
