@@ -46,6 +46,7 @@ git clone [https://github.com/aura-id-network/aura-id-api.git](https://github.co
 cd aura-id-api
 
 ```
+```
 
 ### 2. Настройка виртуального окружения
 
