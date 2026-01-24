@@ -4,7 +4,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from config import FLASK_HOST, FLASK_PORT, API_BASE_URL
-from database import init_db, User, Card, Collection
+from database import init_db, User, Card, Collection, Airdrop, AirdropCard
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -29,6 +29,7 @@ def health_check():
             "GET /api/health",
             "POST /api/check-card",
             "POST /api/check-collection",
+            "POST /api/check-airdrop",
             "GET /api/collections",
             "GET /api/collections/<id>",
             "GET /api/cards/<access_key>",
@@ -414,6 +415,131 @@ def get_user_cards(telegram_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/check-airdrop', methods=['POST'])
+def check_airdrop():
+    """
+    Проверяет наличие карт из указанного аирдропа у пользователя
+    
+    Request body:
+    {
+        "telegram_id": 123456789,
+        "airdrop_id": 1
+    }
+    
+    Response:
+    {
+        "has_airdrop_card": true,
+        "can_claim_more": false,
+        "airdrop": {
+            "id": 1,
+            "name": "Airdrop Name",
+            "description": "Description",
+            "creator_id": 123,
+            "total_cards": 10,
+            "available_cards": 5,
+            "is_active": true
+        },
+        "user_cards": [
+            {
+                "id": 1,
+                "card_number": 1,
+                "name": "Card Name",
+                "access_key": "ABCD-EFGH-IJKL",
+                "registration_date": "01.01.2024"
+            }
+        ],
+        "claimed_cards": 2
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data or 'telegram_id' not in data or 'airdrop_id' not in data:
+            return jsonify({"error": "telegram_id and airdrop_id are required"}), 400
+        
+        telegram_id = int(data['telegram_id'])
+        airdrop_id = int(data['airdrop_id'])
+        
+        # Получаем пользователя
+        user = User.get_by_telegram_id(telegram_id)
+        if not user:
+            return jsonify({
+                "has_airdrop_card": False,
+                "airdrop": None,
+                "user_cards": [],
+                "claimed_cards": 0,
+                "message": "User not found"
+            })
+        
+        # Получаем аирдроп
+        airdrop = Airdrop.get_by_id(airdrop_id)
+        if not airdrop:
+            return jsonify({
+                "has_airdrop_card": False,
+                "airdrop": None,
+                "user_cards": [],
+                "claimed_cards": 0,
+                "message": "Airdrop not found"
+            })
+        
+        # Получаем все карты пользователя
+        user_cards = user.get_cards()
+        
+        # Получаем все карты из аирдропа
+        from database import get_db_cursor
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT c.* FROM cards c
+                JOIN airdrop_cards ac ON c.id = ac.card_id
+                WHERE ac.airdrop_id = ?
+            """, (airdrop_id,))
+            airdrop_card_rows = cursor.fetchall()
+            airdrop_cards = [Card.from_row(row) for row in airdrop_card_rows]
+        
+        # Находим карты пользователя из этого аирдропа
+        user_airdrop_cards = []
+        for card in user_cards:
+            if any(card.id == acard.id for acard in airdrop_cards):
+                user_airdrop_cards.append({
+                    "id": card.id,
+                    "card_number": card.card_number,
+                    "name": card.name,
+                    "access_key": card.access_key,
+                    "registration_date": card.registration_date,
+                    "collection_id": card.collection_id
+                })
+        
+        # Получаем количество забранных карт
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) FROM airdrop_cards 
+                WHERE airdrop_id = ? AND is_reserved = 1
+            """, (airdrop_id,))
+            claimed_cards = cursor.fetchone()[0]
+        
+        # Формируем информацию об аирдропе
+        airdrop_info = {
+            "id": airdrop.id,
+            "name": airdrop.name,
+            "description": airdrop.description or "",
+            "creator_id": airdrop.creator_id,
+            "total_cards": airdrop.get_total_cards(),
+            "available_cards": airdrop.get_available_cards(),
+            "is_active": airdrop.is_active,
+            "created_at": airdrop.created_at
+        }
+        
+        return jsonify({
+            "has_airdrop_card": len(user_airdrop_cards) > 0,
+            "can_claim_more": len(user_airdrop_cards) == 0 and airdrop.is_active,
+            "airdrop": airdrop_info,
+            "user_cards": user_airdrop_cards,
+            "claimed_cards": claimed_cards,
+            "message": f"Found {len(user_airdrop_cards)} cards from airdrop {airdrop_id}"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/docs', methods=['GET'])
 def api_docs():
     """
@@ -465,6 +591,22 @@ def api_docs():
                     "body": {
                         "telegram_id": 123456789,
                         "collection_access_key": "ABCD-EFGH-IJKL"
+                    }
+                }
+            },
+            {
+                "path": "/api/check-airdrop",
+                "method": "POST", 
+                "description": "Проверить наличие карт из аирдропа у пользователя",
+                "parameters": [
+                    {"name": "telegram_id", "type": "integer", "required": True},
+                    {"name": "airdrop_id", "type": "integer", "required": True}
+                ],
+                "example": {
+                    "url": f"{API_BASE_URL}/api/check-airdrop",
+                    "body": {
+                        "telegram_id": 123456789,
+                        "airdrop_id": 1
                     }
                 }
             },
