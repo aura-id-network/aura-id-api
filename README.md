@@ -170,45 +170,6 @@ python src/api_server.py
 }
 ```
 
-#### `POST /api/check-airdrop`
-
-Проверяет наличие карт из указанного аирдропа у пользователя. Позволяет узнать, доступна ли пользователю возможность получить карты из аирдропа.
-
-**Request Body:**
-
-```json
-{
-  "telegram_id": 123456789,
-  "airdrop_id": 1
-}
-```
-
-**Response (200 OK):**
-
-```json
-{
-  "has_airdrop_card": true,
-  "can_claim_more": false,
-  "airdrop": {
-    "id": 1,
-    "name": "Airdrop Name",
-    "description": "Description",
-    "total_cards": 10,
-    "available_cards": 5,
-    "is_active": true
-  },
-  "user_cards": [
-    {
-      "id": 1,
-      "card_number": 1,
-      "name": "Card Name",
-      "access_key": "ABCD-EFGH-IJKL"
-    }
-  ],
-  "claimed_cards": 2
-}
-```
-
 ### 📚 Коллекции
 
 #### `GET /api/collections`
